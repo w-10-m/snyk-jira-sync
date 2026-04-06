@@ -1,0 +1,31 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8130:8130"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    # CLI usage:
+    #   docker compose run --rm api python cli.py --dry-run
+    #   docker compose run --rm api python cli.py --repos my-repo
+
+  db:
+    image: postgres:17
+    ports:
+      - "5530:5432"
+    environment:
+      POSTGRES_DB: snyk_jira_sync
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
