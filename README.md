@@ -18,18 +18,103 @@ Developers fix Snyk vulnerabilities (e.g., upgrade a dependency) but don't updat
 
 ## Setup
 
-### Prerequisites
+### 1. Get a Snyk API Token
 
-- **Snyk API token** — Service account (Enterprise) or personal token
-- **Snyk Org ID** — Found in Snyk Org Settings → General
-- **Jira Personal Access Token** — Generated in Jira profile → Personal Access Tokens
-- **Security manager's Jira username**
+**Option A: Personal token (quick start)**
+1. Log into [app.snyk.io](https://app.snyk.io)
+2. Click your **avatar** (bottom-left) → **Account Settings**
+3. Under **General** → **Auth Token**, click **"click to show"**
+4. Copy the token
 
-### Configuration
+**Option B: Service account (recommended for automation)**
+1. Go to **Snyk Org Settings** → **Service Accounts**
+2. Click **"Create a service account"**
+3. Name it (e.g., `jira-sync-bot`), select role **Org Viewer** (read-only is sufficient)
+4. Copy the generated token
+
+> Note: API access requires a paid Snyk plan. Service accounts require Enterprise.
+
+**Verify it works:**
+```bash
+curl -H "Authorization: token YOUR_SNYK_TOKEN" \
+  "https://api.snyk.io/rest/orgs?version=2024-10-15"
+```
+
+### 2. Get your Snyk Org ID
+
+1. Log into [app.snyk.io](https://app.snyk.io)
+2. Go to **Org Settings** → **General**
+3. The **Organization ID** is displayed on this page (a UUID like `a1b2c3d4-...`)
+
+Alternatively, use the token from step 1:
+```bash
+curl -H "Authorization: token YOUR_SNYK_TOKEN" \
+  "https://api.snyk.io/rest/orgs?version=2024-10-15" | python3 -m json.tool
+```
+Look for your org's `id` field in the response.
+
+### 3. Get a Jira Personal Access Token (PAT)
+
+This is for **Jira Server / Data Center** (not Jira Cloud):
+
+1. Log into your Jira instance (e.g., `https://jiraent.yourcompany.gov`)
+2. Click your **avatar** (top-right) → **Profile**
+3. Go to **Personal Access Tokens** (left sidebar)
+4. Click **"Create token"**
+5. Name it (e.g., `snyk-jira-sync`), set an expiration if required by policy
+6. Copy the token immediately — it won't be shown again
+
+> The PAT user needs permissions to: view issues, transition issues, reassign issues, and add comments in the relevant Jira projects.
+
+**Verify it works:**
+```bash
+curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
+  "https://jiraent.yourcompany.gov/rest/api/2/myself"
+```
+
+### 4. Find the Security Manager's Jira Username
+
+This is the Jira username (not display name) of the person who should close out resolved tickets. To find it:
+
+1. Go to their Jira profile page
+2. The username is in the URL: `https://jira.example.gov/secure/ViewProfile.jspa?name=THE_USERNAME`
+
+Or search via API:
+```bash
+curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
+  "https://jiraent.yourcompany.gov/rest/api/2/user/search?username=smith"
+```
+Look for the `name` field in the response.
+
+### 5. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env with your values
+```
+
+Edit `.env` with the values you collected:
+
+```bash
+SNYK_TOKEN=your_snyk_token_from_step_1
+SNYK_ORG_ID=your_org_id_from_step_2
+JIRA_BASE_URL=https://jiraent.yourcompany.gov
+JIRA_PAT=your_jira_pat_from_step_3
+JIRA_SECURITY_MANAGER_USERNAME=the_username_from_step_4
+```
+
+### 6. Start
+
+```bash
+# Start the API + database
+docker compose up -d
+
+# Run database migrations
+docker compose exec api alembic upgrade head
+
+# Test with a dry run (no changes made)
+curl -X POST http://localhost:8130/sync \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run": true}'
 ```
 
 ## API Usage
