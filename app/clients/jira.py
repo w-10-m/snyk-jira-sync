@@ -58,9 +58,40 @@ class JiraClient:
     def get_issue(self, issue_key: str) -> dict:
         """Get issue details including status and assignee."""
         url = f"{self.api_url}/issue/{issue_key}"
-        params = {"fields": "status,assignee,summary,labels"}
+        params = {"fields": "status,assignee,summary,description,labels"}
         response = self._request("GET", url, params=params)
         return response.json()
+
+    def search_issues(
+        self,
+        jql: str,
+        fields: str = "status,summary,description,labels",
+        page_size: int = 100,
+    ) -> list:
+        """Search Jira issues with JQL and paginate through all results."""
+        issues = []
+        start_at = 0
+
+        while True:
+            url = f"{self.api_url}/search"
+            params = {
+                "jql": jql,
+                "fields": fields,
+                "startAt": start_at,
+                "maxResults": page_size,
+            }
+            response = self._request("GET", url, params=params)
+            payload = response.json()
+            batch = payload.get("issues", [])
+            total = payload.get("total", 0)
+
+            issues.extend(batch)
+            start_at += len(batch)
+
+            if not batch or start_at >= total:
+                break
+
+        return issues
 
     def get_transitions(self, issue_key: str) -> list:
         """Get available transitions for an issue."""
