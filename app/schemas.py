@@ -9,8 +9,14 @@ class SyncRequest(BaseModel):
     dry_run: bool = False
 
 
+class SyncOneRequest(BaseModel):
+    jira_key: str
+    dry_run: bool = False
+
+
 class SyncActionResponse(BaseModel):
     id: UUID
+    project_name: str | None = None
     snyk_issue_id: str
     jira_key: str
     action: str
