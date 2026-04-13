@@ -1,6 +1,6 @@
 # Snyk-Jira Sync
 
-Automatically detects when Snyk vulnerabilities have been resolved and updates the corresponding Jira tickets — transitions them to "In Progress" and reassigns to the security manager for closure.
+Automatically detects when Snyk vulnerabilities have been resolved and updates the corresponding Jira tickets — transitions them to the configured review status and reassigns to the security manager for closure.
 
 ## Problem
 
@@ -9,10 +9,11 @@ Developers fix Snyk vulnerabilities (e.g., upgrade a dependency) but don't updat
 ## How It Works
 
 1. Fetches Snyk projects for your repo(s)
-2. Gets the Snyk Issue → Jira ticket mapping (via Snyk V1 API)
-3. Checks each Snyk issue's current status (via Snyk REST API)
-4. For resolved issues with open Jira tickets:
-   - Transitions the Jira ticket to "In Progress"
+2. Fetches existing Jira tickets using JQL (default: `text ~ "SNYK-"`)
+3. Extracts Snyk issue IDs from Jira ticket text (summary/description)
+4. Checks each Snyk issue's current status (via Snyk REST API)
+5. For resolved issues with open Jira tickets:
+   - Transitions the Jira ticket to the configured review status (default: `In Review`)
    - Adds a comment explaining the vulnerability was resolved
    - Reassigns to the security manager
 
@@ -36,7 +37,7 @@ Developers fix Snyk vulnerabilities (e.g., upgrade a dependency) but don't updat
 
 **Verify it works:**
 ```bash
-curl -H "Authorization: token YOUR_SNYK_TOKEN" \
+curl -H "Authorization: token <TOKEN>" \
   "https://api.snyk.io/rest/orgs?version=2024-10-15"
 ```
 
@@ -57,7 +58,7 @@ Look for your org's `id` field in the response.
 
 This is for **Jira Server / Data Center** (not Jira Cloud):
 
-1. Log into your Jira instance (e.g., `https://jiraent.yourcompany.gov`)
+1. Log into your Jira instance (e.g., `https://jiraent.yourcompany.com`)
 2. Click your **avatar** (top-right) → **Profile**
 3. Go to **Personal Access Tokens** (left sidebar)
 4. Click **"Create token"**
@@ -69,7 +70,7 @@ This is for **Jira Server / Data Center** (not Jira Cloud):
 **Verify it works:**
 ```bash
 curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
-  "https://jiraent.yourcompany.gov/rest/api/2/myself"
+  "https://jiraent.yourcompany.com/rest/api/2/myself"
 ```
 
 ### 4. Find the Security Manager's Jira Username
@@ -77,12 +78,12 @@ curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
 This is the Jira username (not display name) of the person who should close out resolved tickets. To find it:
 
 1. Go to their Jira profile page
-2. The username is in the URL: `https://jira.example.gov/secure/ViewProfile.jspa?name=THE_USERNAME`
+2. The username is in the URL: `https://jira.xyz.com/secure/ViewProfile.jspa?name=THE_USERNAME`
 
 Or search via API:
 ```bash
 curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
-  "https://jiraent.yourcompany.gov/rest/api/2/user/search?username=smith"
+  "https://jiraent.xyz.com/rest/api/2/user/search?username=smith"
 ```
 Look for the `name` field in the response.
 
@@ -97,9 +98,16 @@ Edit `.env` with the values you collected:
 ```bash
 SNYK_TOKEN=your_snyk_token_from_step_1
 SNYK_ORG_ID=your_org_id_from_step_2
-JIRA_BASE_URL=https://jiraent.yourcompany.gov
+JIRA_BASE_URL=https://jiraent.XYZ.com
 JIRA_PAT=your_jira_pat_from_step_3
 JIRA_SECURITY_MANAGER_USERNAME=the_username_from_step_4
+JIRA_TARGET_STATUS=In Review
+
+# Optional: narrow Snyk projects to only project-tag repos
+SNYK_PROJECT_TAGS=project-tag/
+
+# Optional: Jira query used to find Snyk-related tickets
+JIRA_SNYK_JQL=text ~ "SNYK-"
 ```
 
 ### 6. Start
@@ -151,6 +159,21 @@ curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"repos": ["my-repo"]}'
 ```
+
+### Interpreting Dry-Run Results
+
+The sync records actions at the `project + Snyk issue + Jira ticket` level.
+Because one codebase can exist as multiple Snyk projects, the same Jira key may
+appear more than once in a dry-run or sync report.
+
+Common examples:
+- a repo-level project such as `hpt/ace-api(master)`
+- a manifest-specific project such as `hpt/ace-api(master):package.json`
+- a container project such as `hpt/document-rendering-svc(master):Dockerfile`
+
+If the same Jira ticket matches more than one of those Snyk projects, the report
+will contain multiple `updated` actions for that Jira key. This is expected and
+does not mean the database duplicated a row by mistake.
 
 ## CLI Usage
 
