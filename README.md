@@ -317,6 +317,6 @@ app/
 │   └── sync.py          # SyncService (core business logic)
 └── routers/
     ├── health.py        # GET /health
-    ├── sync.py          # POST /sync, GET /sync/history, GET /sync/{id}
+    ├── sync.py          # POST /sync, POST /sync/one, GET /sync/history, GET /sync/{id}
     └── projects.py      # GET /projects, GET /projects/{id}/issues
 ```
