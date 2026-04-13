@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.clients.jira import JiraClient
 from app.config import Settings
-from app.dependencies import get_settings, get_snyk_client
+from app.dependencies import get_jira_client, get_settings, get_snyk_client
 from app.clients.snyk import SnykClient
 from app.schemas import ProjectResponse, ProjectIssueResponse
 from app.services.sync import SyncService
@@ -33,12 +34,29 @@ def get_project_issues(
     project_id: str,
     settings: Settings = Depends(get_settings),
     snyk: SnykClient = Depends(get_snyk_client),
+    jira: JiraClient = Depends(get_jira_client),
 ):
-    """Get issues for a Snyk project with linked Jira ticket keys."""
+    """Get issues for a Snyk project with linked Jira ticket keys.
+
+    This mirrors the sync path by discovering Jira tickets via JQL instead of
+    relying on Snyk's optional jira-issues integration endpoint.
+    """
     org_id = settings.snyk_org_id
 
+    project = next(
+        (p for p in snyk.get_projects(org_id) if p.get("id") == project_id),
+        None,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_name = project.get("attributes", {}).get("name", project_id)
     issues = snyk.get_issues(org_id, project_id)
-    jira_map = snyk.get_jira_issues(org_id, project_id)
+    jira_issues = jira.search_issues(jql=settings.jira_snyk_jql)
+    jira_map = SyncService(snyk=snyk, jira=jira).build_project_jira_map(
+        project_name=project_name,
+        jira_issues=jira_issues,
+    )
 
     result = []
     for issue in issues:
