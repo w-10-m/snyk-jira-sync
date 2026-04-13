@@ -247,6 +247,29 @@ python cli.py --repos my-repo,another-repo
 docker compose run --rm api python cli.py --dry-run
 ```
 
+## Utility Scripts
+
+Operational and diagnostic helpers live under `scripts/`:
+
+```bash
+# Inspect Snyk projects and tags
+python scripts/check_projects.py
+
+# Debug the legacy Snyk jira-issues endpoint
+python scripts/debug_jira_issues.py
+
+# Run the Jira integration diagnostic
+python scripts/jira_integration_diagnostic.py
+```
+
+Docker examples:
+
+```bash
+docker compose exec api python scripts/check_projects.py
+docker compose exec api python scripts/debug_jira_issues.py
+docker compose exec api python scripts/jira_integration_diagnostic.py
+```
+
 ## Database Migrations
 
 ```bash

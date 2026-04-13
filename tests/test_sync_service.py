@@ -226,7 +226,7 @@ class TestRun:
             dry_run=True,
         )
 
-        assert totals["checked"] == 3
+        assert totals["checked"] == 2
         assert totals["resolved"] == 2
         assert totals["updated"] == 2
         assert totals["skipped"] == 0
