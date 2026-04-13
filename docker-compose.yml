@@ -4,6 +4,8 @@ services:
     ports:
       - "8130:8130"
     env_file: .env
+    volumes:
+      - ./.local/sync-reports:/app/.local/sync-reports
     depends_on:
       db:
         condition: service_healthy

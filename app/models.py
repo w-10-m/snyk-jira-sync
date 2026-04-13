@@ -34,6 +34,7 @@ class SyncAction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     run_id = Column(UUID(as_uuid=True), ForeignKey("sync_runs.id"), nullable=False)
+    project_name = Column(String(500), nullable=True)
     snyk_issue_id = Column(String(200), nullable=False)
     jira_key = Column(String(50), nullable=False)
     action = Column(String(30), nullable=False)  # transitioned, commented, reassigned, skipped, errored

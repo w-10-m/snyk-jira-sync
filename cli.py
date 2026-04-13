@@ -55,7 +55,10 @@ def main():
     service.run(
         org_id=settings.snyk_org_id,
         security_manager=settings.jira_security_manager_username,
+        target_status=settings.jira_target_status,
         repo_filter=repo_filter,
+        project_tags=settings.snyk_project_tags,
+        jira_jql=settings.jira_snyk_jql,
         dry_run=dry_run,
     )
 

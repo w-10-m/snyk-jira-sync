@@ -14,12 +14,12 @@ class TestJiraClientInit:
         assert jira_client.session.headers["Content-Type"] == "application/json"
 
     def test_builds_api_url(self, jira_client):
-        assert jira_client.api_url == "https://jira.example.gov/rest/api/2"
+        assert jira_client.api_url == "https://jira.example.com/rest/api/2"
 
     def test_strips_trailing_slash(self):
-        client = JiraClient("https://jira.example.gov/", "pat")
-        assert client.base_url == "https://jira.example.gov"
-        assert client.api_url == "https://jira.example.gov/rest/api/2"
+        client = JiraClient("https://jira.example.com/", "pat")
+        assert client.base_url == "https://jira.example.com"
+        assert client.api_url == "https://jira.example.com/rest/api/2"
 
 
 class TestJiraParseRetryAfter:
@@ -42,7 +42,7 @@ class TestJiraRequest:
         mock_response.status_code = 200
         jira_client.session.request = MagicMock(return_value=mock_response)
 
-        result = jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+        result = jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
         assert result is mock_response
         mock_response.raise_for_status.assert_called_once()
@@ -52,7 +52,7 @@ class TestJiraRequest:
         mock_response.status_code = 200
         jira_client.session.request = MagicMock(return_value=mock_response)
 
-        jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+        jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
         _, kwargs = jira_client.session.request.call_args
         assert kwargs["timeout"] == DEFAULT_TIMEOUT
@@ -68,7 +68,7 @@ class TestJiraRequest:
 
         jira_client.session.request = MagicMock(side_effect=[rate_limited, success])
 
-        result = jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+        result = jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
         assert result is success
         mock_sleep.assert_called_once_with(3)
@@ -82,7 +82,7 @@ class TestJiraRequest:
         jira_client.session.request = MagicMock(return_value=rate_limited)
 
         with pytest.raises(RuntimeError, match="rate limit exceeded after 4 retries"):
-            jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+            jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
         assert jira_client.session.request.call_count == 4
 
@@ -97,7 +97,7 @@ class TestJiraRequest:
 
         jira_client.session.request = MagicMock(side_effect=[rate_limited, success])
 
-        jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+        jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
         mock_sleep.assert_called_once_with(60)
 
@@ -110,7 +110,7 @@ class TestJiraRequest:
         jira_client.session.request = MagicMock(return_value=mock_response)
 
         with pytest.raises(requests.exceptions.HTTPError, match="403"):
-            jira_client._request("GET", "https://jira.example.gov/rest/api/2/issue/SEC-1")
+            jira_client._request("GET", "https://jira.example.com/rest/api/2/issue/SEC-1")
 
 
 class TestGetIssue:
@@ -173,6 +173,39 @@ class TestGetTransitions:
         result = jira_client.get_transitions("SEC-1")
 
         assert result == []
+
+
+class TestSearchIssues:
+    def test_returns_all_pages(self, jira_client):
+        page1 = MagicMock()
+        page1.status_code = 200
+        page1.json.return_value = {
+            "issues": [{"key": "SEC-1"}, {"key": "SEC-2"}],
+            "total": 3,
+        }
+        page2 = MagicMock()
+        page2.status_code = 200
+        page2.json.return_value = {
+            "issues": [{"key": "SEC-3"}],
+            "total": 3,
+        }
+
+        jira_client.session.request = MagicMock(side_effect=[page1, page2])
+
+        results = jira_client.search_issues("text ~ \"SNYK-\"", page_size=2)
+
+        assert [r["key"] for r in results] == ["SEC-1", "SEC-2", "SEC-3"]
+        assert jira_client.session.request.call_count == 2
+
+    def test_returns_empty_when_no_matches(self, jira_client):
+        page = MagicMock()
+        page.status_code = 200
+        page.json.return_value = {"issues": [], "total": 0}
+        jira_client.session.request = MagicMock(return_value=page)
+
+        results = jira_client.search_issues("text ~ \"SNYK-\"")
+
+        assert results == []
 
 
 class TestTransitionIssue:

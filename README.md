@@ -1,6 +1,6 @@
 # Snyk-Jira Sync
 
-Automatically detects when Snyk vulnerabilities have been resolved and updates the corresponding Jira tickets — transitions them to "In Progress" and reassigns to the security manager for closure.
+Automatically detects when Snyk vulnerabilities have been resolved and updates the corresponding Jira tickets — transitions them to the configured review status and reassigns to the security manager for closure.
 
 ## Problem
 
@@ -9,10 +9,11 @@ Developers fix Snyk vulnerabilities (e.g., upgrade a dependency) but don't updat
 ## How It Works
 
 1. Fetches Snyk projects for your repo(s)
-2. Gets the Snyk Issue → Jira ticket mapping (via Snyk V1 API)
-3. Checks each Snyk issue's current status (via Snyk REST API)
-4. For resolved issues with open Jira tickets:
-   - Transitions the Jira ticket to "In Progress"
+2. Fetches existing Jira tickets using JQL (default: `text ~ "SNYK-"`)
+3. Extracts Snyk issue IDs from Jira ticket text (summary/description)
+4. Checks each Snyk issue's current status (via Snyk REST API)
+5. For resolved issues with open Jira tickets:
+   - Transitions the Jira ticket to the configured review status (default: `In Review`)
    - Adds a comment explaining the vulnerability was resolved
    - Reassigns to the security manager
 
@@ -36,7 +37,7 @@ Developers fix Snyk vulnerabilities (e.g., upgrade a dependency) but don't updat
 
 **Verify it works:**
 ```bash
-curl -H "Authorization: token YOUR_SNYK_TOKEN" \
+curl -H "Authorization: token <TOKEN>" \
   "https://api.snyk.io/rest/orgs?version=2024-10-15"
 ```
 
@@ -57,7 +58,7 @@ Look for your org's `id` field in the response.
 
 This is for **Jira Server / Data Center** (not Jira Cloud):
 
-1. Log into your Jira instance (e.g., `https://jiraent.yourcompany.gov`)
+1. Log into your Jira instance (e.g., `https://jiraent.yourcompany.com`)
 2. Click your **avatar** (top-right) → **Profile**
 3. Go to **Personal Access Tokens** (left sidebar)
 4. Click **"Create token"**
@@ -69,7 +70,7 @@ This is for **Jira Server / Data Center** (not Jira Cloud):
 **Verify it works:**
 ```bash
 curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
-  "https://jiraent.yourcompany.gov/rest/api/2/myself"
+  "https://jiraent.yourcompany.com/rest/api/2/myself"
 ```
 
 ### 4. Find the Security Manager's Jira Username
@@ -77,12 +78,12 @@ curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
 This is the Jira username (not display name) of the person who should close out resolved tickets. To find it:
 
 1. Go to their Jira profile page
-2. The username is in the URL: `https://jira.example.gov/secure/ViewProfile.jspa?name=THE_USERNAME`
+2. The username is in the URL: `https://jira.xyz.com/secure/ViewProfile.jspa?name=THE_USERNAME`
 
 Or search via API:
 ```bash
 curl -H "Authorization: Bearer YOUR_JIRA_PAT" \
-  "https://jiraent.yourcompany.gov/rest/api/2/user/search?username=smith"
+  "https://jiraent.xyz.com/rest/api/2/user/search?username=smith"
 ```
 Look for the `name` field in the response.
 
@@ -97,35 +98,57 @@ Edit `.env` with the values you collected:
 ```bash
 SNYK_TOKEN=your_snyk_token_from_step_1
 SNYK_ORG_ID=your_org_id_from_step_2
-JIRA_BASE_URL=https://jiraent.yourcompany.gov
+JIRA_BASE_URL=https://jiraent.XYZ.com
 JIRA_PAT=your_jira_pat_from_step_3
 JIRA_SECURITY_MANAGER_USERNAME=the_username_from_step_4
+JIRA_TARGET_STATUS=In Review
+
+# Optional: narrow Snyk projects to only project-tag repos
+SNYK_PROJECT_TAGS=project-tag/
+
+# Optional: Jira query used to find Snyk-related tickets
+JIRA_SNYK_JQL=text ~ "SNYK-"
 ```
 
-### 6. Start
+### 6. Docker Quick Start
 
 ```bash
-# Start the API + database
+# Start the API and database
 docker compose up -d
 
-# Run database migrations
+# Apply database migrations
 docker compose exec api alembic upgrade head
 
-# Test with a dry run (no changes made)
+# Verify the API is healthy
+curl http://localhost:8130/health
+
+# Run a full dry run
 curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
+
+# Run a targeted dry run for one Jira ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":true}'
+```
+
+Important:
+- `docker compose up -d` by itself is not enough. You must run `docker compose exec api alembic upgrade head` before using the app.
+- The API listens on `http://localhost:8130`.
+- Swagger docs are at `http://localhost:8130/docs`.
+- Sync reports are written to `.local/sync-reports/`.
+
+After code changes:
+```bash
+# Rebuild and restart the API container
+docker compose up -d --build api
+
+# Re-run migrations if new Alembic migrations were added
+docker compose exec api alembic upgrade head
 ```
 
 ## API Usage
-
-### Start the API
-
-```bash
-docker compose up
-```
-
-API runs on `http://localhost:8130`. Swagger docs at `http://localhost:8130/docs`.
 
 ### Endpoints
 
@@ -133,12 +156,13 @@ API runs on `http://localhost:8130`. Swagger docs at `http://localhost:8130/docs
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `POST` | `/sync` | Trigger a sync run |
+| `POST` | `/sync/one` | Trigger a sync run for exactly one Jira ticket |
 | `GET` | `/sync/history` | List past sync runs |
 | `GET` | `/sync/{run_id}` | Get sync run details with actions |
 | `GET` | `/projects` | List Snyk projects |
 | `GET` | `/projects/{id}/issues` | Get issues with Jira links |
 
-### Trigger a sync
+### Full Sync
 
 ```bash
 # Dry run
@@ -146,11 +170,69 @@ curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
 
-# Real run for specific repos
+# Live run for specific repos
 curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"repos": ["my-repo"]}'
 ```
+
+### Targeted Sync For One Jira Ticket
+
+```bash
+# Dry run for one ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":true}'
+
+# Live run for one ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":false}'
+```
+
+### Interpreting Dry-Run Results
+
+The sync records actions at the `project + Snyk issue + Jira ticket` level.
+Because one codebase can exist as multiple Snyk projects, the same Jira key may
+appear more than once in a dry-run or sync report.
+
+Common examples:
+- a repo-level project such as `hpt/ace-api(master)`
+- a manifest-specific project such as `hpt/ace-api(master):package.json`
+- a container project such as `hpt/document-rendering-svc(master):Dockerfile`
+
+If the same Jira ticket matches more than one of those Snyk projects, the report
+will contain multiple `updated` actions for that Jira key. This is expected and
+does not mean the database duplicated a row by mistake.
+
+The sync also skips tickets in these cases:
+- Jira is already in a `done` status category
+- Jira is already in the configured target status and already assigned to `JIRA_SECURITY_MANAGER_USERNAME`
+
+The full `/sync` path includes a guard against multi-project false positives:
+- if the same `jira_key + Snyk issue ID` is still open in any matched Snyk project, the bulk run will not treat it as resolved from another sibling project that no longer reports it
+- this keeps full-sync behavior aligned with `POST /sync/one` for ambiguous multi-project cases
+
+### Inspecting Run Results
+
+```bash
+# List recent runs
+curl http://localhost:8130/sync/history
+
+# Get one run with full actions
+curl http://localhost:8130/sync/<run_id>
+```
+
+Each run response includes:
+- `total_checked`
+- `total_resolved`
+- `total_updated`
+- `total_skipped`
+- `total_errors`
+- `actions[]` with `project_name`, `jira_key`, `snyk_issue_id`, `action`, and `detail`
+
+Reports are also written locally as JSON files:
+- `.local/sync-reports/sync-<run_id>.json`
 
 ## CLI Usage
 
@@ -165,14 +247,40 @@ python cli.py --repos my-repo,another-repo
 docker compose run --rm api python cli.py --dry-run
 ```
 
+## Utility Scripts
+
+Operational and diagnostic helpers live under `scripts/`:
+
+```bash
+# Inspect Snyk projects and tags
+python scripts/check_projects.py
+
+# Debug the legacy Snyk jira-issues endpoint
+python scripts/debug_jira_issues.py
+
+# Run the Jira integration diagnostic
+python scripts/jira_integration_diagnostic.py
+```
+
+Docker examples:
+
+```bash
+docker compose exec api python scripts/check_projects.py
+docker compose exec api python scripts/debug_jira_issues.py
+docker compose exec api python scripts/jira_integration_diagnostic.py
+```
+
 ## Database Migrations
 
 ```bash
-# Run migrations
+# Run migrations locally
 alembic upgrade head
 
 # Create a new migration after model changes
 alembic revision --autogenerate -m "description"
+
+# Run migrations in Docker
+docker compose exec api alembic upgrade head
 ```
 
 ## Running Tests
@@ -180,6 +288,9 @@ alembic revision --autogenerate -m "description"
 ```bash
 pip install -r requirements.txt
 pytest tests/ -v
+
+# Or in Docker
+docker compose exec -T api pytest -q
 ```
 
 ## Cron Job
@@ -206,6 +317,6 @@ app/
 │   └── sync.py          # SyncService (core business logic)
 └── routers/
     ├── health.py        # GET /health
-    ├── sync.py          # POST /sync, GET /sync/history, GET /sync/{id}
+    ├── sync.py          # POST /sync, POST /sync/one, GET /sync/history, GET /sync/{id}
     └── projects.py      # GET /projects, GET /projects/{id}/issues
 ```

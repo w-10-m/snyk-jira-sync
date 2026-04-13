@@ -6,3 +6,7 @@ venv/
 *.log
 .DS_Store
 .pytest_cache/
+.local/
+*.md
+!README.md
+.idea/

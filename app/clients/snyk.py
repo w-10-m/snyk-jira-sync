@@ -98,6 +98,51 @@ class SnykClient:
             params["names"] = name_filter
         return self._rest_get_all(f"/orgs/{org_id}/projects", params=params)
 
+    def get_projects_by_tags(self, org_id: str, tags: list[str]) -> list:
+        """List projects in an org filtered by tags.
+
+        Args:
+            org_id: Organization ID
+            tags: List of tags to filter by (projects must have at least one tag in the list)
+
+        Returns:
+            List of projects that have at least one matching tag
+        """
+        all_projects = self._rest_get_all(f"/orgs/{org_id}/projects")
+
+        # Filter projects by tags
+        filtered_projects = []
+        for project in all_projects:
+            project_tags = project.get("attributes", {}).get("tags", [])
+            project_tag_keys = [tag.get("key") for tag in project_tags]
+
+            # Check if any of the desired tags match
+            if any(tag in project_tag_keys for tag in tags):
+                filtered_projects.append(project)
+
+        return filtered_projects
+
+    def get_projects_by_name_prefix(self, org_id: str, prefix: str) -> list:
+        """List projects in an org filtered by name prefix.
+
+        Args:
+            org_id: Organization ID
+            prefix: Name prefix to filter by (e.g., "xyz/")
+
+        Returns:
+            List of projects whose name starts with the prefix
+        """
+        all_projects = self._rest_get_all(f"/orgs/{org_id}/projects")
+
+        # Filter projects by name prefix
+        filtered_projects = []
+        for project in all_projects:
+            project_name = project.get("attributes", {}).get("name", "")
+            if project_name.lower().startswith(prefix.lower()):
+                filtered_projects.append(project)
+
+        return filtered_projects
+
     def get_issues(self, org_id: str, project_id: str) -> list:
         """Get all issues for a project via REST API."""
         params = {
@@ -111,5 +156,24 @@ class SnykClient:
 
         Returns a dict like:
             {"SNYK-JS-LODASH-123": [{"jiraIssue": {"id": "10001", "key": "PROJ-1"}}]}
+
+        If the V1 endpoint is not available (406/404), returns empty dict.
         """
-        return self._v1_get(f"/org/{org_id}/project/{project_id}/jira-issues")
+        try:
+            # Try V1 API — this endpoint requires Jira integration to be configured in Snyk
+            url = f"{self.base_url}/v1/org/{org_id}/project/{project_id}/jira-issues"
+            return self._request("GET", url)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code in (404, 406):
+                # 404: Endpoint not found (may be disabled or not available in this Snyk version)
+                # 406: Not Acceptable (may mean Jira integration not configured)
+                logger.debug(
+                    "Jira issues endpoint returned %d for project %s — "
+                    "Jira integration may not be configured in Snyk. "
+                    "Set SNYK_SKIP_JIRA_LOOKUP=true to suppress this warning.",
+                    e.response.status_code,
+                    project_id,
+                )
+                return {}
+            # Re-raise other HTTP errors
+            raise

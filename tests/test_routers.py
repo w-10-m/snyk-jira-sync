@@ -8,10 +8,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
-from app.dependencies import get_settings, get_sync_service
+from app.dependencies import get_jira_client, get_settings, get_sync_service
 from app.main import app
 from app.models import Base, SyncRun
-from tests.conftest import make_snyk_issue, make_jira_map, make_jira_issue
+from app.services.sync import SyncSelectionError
+from tests.conftest import make_snyk_issue, make_jira_issue
 
 # In-memory SQLite for tests — StaticPool ensures all connections share the same DB
 engine = create_engine(
@@ -45,9 +46,12 @@ def make_test_settings():
     settings.snyk_org_id = "org-1"
     settings.snyk_base_url = "https://api.snyk.io"
     settings.snyk_repo_names = None
-    settings.jira_base_url = "https://jira.example.gov"
+    settings.snyk_project_tags = "xyz/"
+    settings.jira_snyk_jql = 'text ~ "SNYK-"'
+    settings.jira_base_url = "https://jira.example.com"
     settings.jira_pat = "pat"
     settings.jira_security_manager_username = "sec.mgr"
+    settings.jira_target_status = "In Review"
     settings.database_url = "sqlite://"
     settings.dry_run = False
     return settings
@@ -79,18 +83,19 @@ def client():
 def client_with_snyk():
     """Test client with a controllable mock Snyk client for /projects endpoints."""
     mock_snyk = MagicMock()
+    mock_jira = MagicMock()
     mock_service = MagicMock()
     mock_service.snyk = mock_snyk
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_settings] = make_test_settings
 
-    # Override the snyk client dependency
     from app.dependencies import get_snyk_client
     app.dependency_overrides[get_snyk_client] = lambda: mock_snyk
+    app.dependency_overrides[get_jira_client] = lambda: mock_jira
     app.dependency_overrides[get_sync_service] = lambda: mock_service
 
-    yield TestClient(app), mock_snyk
+    yield TestClient(app), mock_snyk, mock_jira
 
     app.dependency_overrides.clear()
 
@@ -184,10 +189,82 @@ class TestSyncEndpoints:
         data = response.json()
         assert data["status"] == "failed"
 
+    def test_trigger_sync_includes_ticket_actions(self, client):
+        mock_service = MagicMock()
+        mock_service.run.return_value = {
+            "checked": 1,
+            "resolved": 1,
+            "updated": 1,
+            "skipped": 0,
+            "errors": 0,
+            "ticket_actions": [
+                {
+                    "project_name": "my-repo",
+                    "snyk_issue_id": "SNYK-JS-LODASH-123",
+                    "jira_key": "SEC-1",
+                    "action": "updated",
+                    "detail": "Dry run: would transition and reassign",
+                }
+            ],
+        }
+        app.dependency_overrides[get_sync_service] = lambda: mock_service
+
+        response = client.post("/sync", json={"dry_run": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["actions"]) == 1
+        assert data["actions"][0]["project_name"] == "my-repo"
+        assert data["actions"][0]["jira_key"] == "SEC-1"
+        assert data["actions"][0]["action"] == "updated"
+
+    def test_trigger_sync_one(self, client):
+        mock_service = MagicMock()
+        mock_service.run_one.return_value = {
+            "checked": 1,
+            "resolved": 1,
+            "updated": 1,
+            "skipped": 0,
+            "errors": 0,
+            "ticket_actions": [
+                {
+                    "project_name": "my-repo",
+                    "snyk_issue_id": "SNYK-JS-LODASH-123",
+                    "jira_key": "SEC-1",
+                    "action": "updated",
+                    "detail": "Dry run: would transition and reassign",
+                }
+            ],
+        }
+        app.dependency_overrides[get_sync_service] = lambda: mock_service
+
+        response = client.post("/sync/one", json={"jira_key": "SEC-1", "dry_run": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["repo_filter"] == "SEC-1"
+        assert data["dry_run"] is True
+        assert data["total_updated"] == 1
+        assert data["actions"][0]["project_name"] == "my-repo"
+        assert data["actions"][0]["jira_key"] == "SEC-1"
+
+    def test_trigger_sync_one_selection_error(self, client):
+        mock_service = MagicMock()
+        mock_service.run_one.side_effect = SyncSelectionError(
+            "Could not match Jira issue SEC-1 to a Snyk project",
+            status_code=404,
+        )
+        app.dependency_overrides[get_sync_service] = lambda: mock_service
+
+        response = client.post("/sync/one", json={"jira_key": "SEC-1", "dry_run": True})
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Could not match Jira issue SEC-1 to a Snyk project"
+
 
 class TestProjectEndpoints:
     def test_list_projects(self, client_with_snyk):
-        client, mock_snyk = client_with_snyk
+        client, mock_snyk, _ = client_with_snyk
         mock_snyk.get_projects.return_value = [
             {"id": "p1", "attributes": {"name": "my-repo", "origin": "github", "type": "npm"}},
         ]
@@ -202,7 +279,7 @@ class TestProjectEndpoints:
         assert data[0]["origin"] == "github"
 
     def test_list_projects_with_filter(self, client_with_snyk):
-        client, mock_snyk = client_with_snyk
+        client, mock_snyk, _ = client_with_snyk
         mock_snyk.get_projects.return_value = []
 
         client.get("/projects?name=my-repo")
@@ -210,13 +287,22 @@ class TestProjectEndpoints:
         mock_snyk.get_projects.assert_called_once_with("org-1", name_filter="my-repo")
 
     def test_get_project_issues(self, client_with_snyk):
-        client, mock_snyk = client_with_snyk
+        client, mock_snyk, mock_jira = client_with_snyk
+        mock_snyk.get_projects.return_value = [
+            {"id": "proj-1", "attributes": {"name": "my-repo"}},
+        ]
         mock_snyk.get_issues.return_value = [
             make_snyk_issue("SNYK-JS-LODASH-123", status="open"),
         ]
-        mock_snyk.get_jira_issues.return_value = make_jira_map([
-            ("SNYK-JS-LODASH-123", "SEC-1"),
-        ])
+        mock_jira.search_issues.return_value = [
+            {
+                "key": "SEC-1",
+                "fields": {
+                    "summary": "my-repo SNYK-JS-LODASH-123",
+                    "description": "",
+                },
+            }
+        ]
 
         response = client.get("/projects/proj-1/issues")
 
@@ -226,16 +312,28 @@ class TestProjectEndpoints:
         assert data[0]["snyk_issue_id"] == "SNYK-JS-LODASH-123"
         assert data[0]["status"] == "open"
         assert data[0]["jira_keys"] == ["SEC-1"]
+        mock_jira.search_issues.assert_called_once_with(jql='text ~ "SNYK-"')
 
     def test_get_project_issues_no_jira_links(self, client_with_snyk):
-        client, mock_snyk = client_with_snyk
+        client, mock_snyk, mock_jira = client_with_snyk
+        mock_snyk.get_projects.return_value = [
+            {"id": "proj-1", "attributes": {"name": "my-repo"}},
+        ]
         mock_snyk.get_issues.return_value = [
             make_snyk_issue("SNYK-JS-LODASH-123", status="open"),
         ]
-        mock_snyk.get_jira_issues.return_value = {}
+        mock_jira.search_issues.return_value = []
 
         response = client.get("/projects/proj-1/issues")
 
         assert response.status_code == 200
         data = response.json()
         assert data[0]["jira_keys"] == []
+
+    def test_get_project_issues_not_found(self, client_with_snyk):
+        client, mock_snyk, _ = client_with_snyk
+        mock_snyk.get_projects.return_value = []
+
+        response = client.get("/projects/proj-1/issues")
+
+        assert response.status_code == 404

@@ -13,7 +13,7 @@ def snyk_client():
 @pytest.fixture
 def jira_client():
     """JiraClient with a fake PAT (no real HTTP calls)."""
-    return JiraClient(base_url="https://jira.example.gov", pat="test-jira-pat")
+    return JiraClient(base_url="https://jira.example.com", pat="test-jira-pat")
 
 
 def make_snyk_issue(problem_id, status="open"):
