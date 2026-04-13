@@ -110,30 +110,45 @@ SNYK_PROJECT_TAGS=project-tag/
 JIRA_SNYK_JQL=text ~ "SNYK-"
 ```
 
-### 6. Start
+### 6. Docker Quick Start
 
 ```bash
-# Start the API + database
+# Start the API and database
 docker compose up -d
 
-# Run database migrations
+# Apply database migrations
 docker compose exec api alembic upgrade head
 
-# Test with a dry run (no changes made)
+# Verify the API is healthy
+curl http://localhost:8130/health
+
+# Run a full dry run
 curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
+
+# Run a targeted dry run for one Jira ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":true}'
+```
+
+Important:
+- `docker compose up -d` by itself is not enough. You must run `docker compose exec api alembic upgrade head` before using the app.
+- The API listens on `http://localhost:8130`.
+- Swagger docs are at `http://localhost:8130/docs`.
+- Sync reports are written to `.local/sync-reports/`.
+
+After code changes:
+```bash
+# Rebuild and restart the API container
+docker compose up -d --build api
+
+# Re-run migrations if new Alembic migrations were added
+docker compose exec api alembic upgrade head
 ```
 
 ## API Usage
-
-### Start the API
-
-```bash
-docker compose up
-```
-
-API runs on `http://localhost:8130`. Swagger docs at `http://localhost:8130/docs`.
 
 ### Endpoints
 
@@ -141,12 +156,13 @@ API runs on `http://localhost:8130`. Swagger docs at `http://localhost:8130/docs
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `POST` | `/sync` | Trigger a sync run |
+| `POST` | `/sync/one` | Trigger a sync run for exactly one Jira ticket |
 | `GET` | `/sync/history` | List past sync runs |
 | `GET` | `/sync/{run_id}` | Get sync run details with actions |
 | `GET` | `/projects` | List Snyk projects |
 | `GET` | `/projects/{id}/issues` | Get issues with Jira links |
 
-### Trigger a sync
+### Full Sync
 
 ```bash
 # Dry run
@@ -154,10 +170,24 @@ curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
 
-# Real run for specific repos
+# Live run for specific repos
 curl -X POST http://localhost:8130/sync \
   -H "Content-Type: application/json" \
   -d '{"repos": ["my-repo"]}'
+```
+
+### Targeted Sync For One Jira Ticket
+
+```bash
+# Dry run for one ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":true}'
+
+# Live run for one ticket
+curl -X POST http://localhost:8130/sync/one \
+  -H "Content-Type: application/json" \
+  -d '{"jira_key":"HPT-1234","dry_run":false}'
 ```
 
 ### Interpreting Dry-Run Results
@@ -175,6 +205,35 @@ If the same Jira ticket matches more than one of those Snyk projects, the report
 will contain multiple `updated` actions for that Jira key. This is expected and
 does not mean the database duplicated a row by mistake.
 
+The sync also skips tickets in these cases:
+- Jira is already in a `done` status category
+- Jira is already in the configured target status and already assigned to `JIRA_SECURITY_MANAGER_USERNAME`
+
+The full `/sync` path includes a guard against multi-project false positives:
+- if the same `jira_key + Snyk issue ID` is still open in any matched Snyk project, the bulk run will not treat it as resolved from another sibling project that no longer reports it
+- this keeps full-sync behavior aligned with `POST /sync/one` for ambiguous multi-project cases
+
+### Inspecting Run Results
+
+```bash
+# List recent runs
+curl http://localhost:8130/sync/history
+
+# Get one run with full actions
+curl http://localhost:8130/sync/<run_id>
+```
+
+Each run response includes:
+- `total_checked`
+- `total_resolved`
+- `total_updated`
+- `total_skipped`
+- `total_errors`
+- `actions[]` with `project_name`, `jira_key`, `snyk_issue_id`, `action`, and `detail`
+
+Reports are also written locally as JSON files:
+- `.local/sync-reports/sync-<run_id>.json`
+
 ## CLI Usage
 
 ```bash
@@ -191,11 +250,14 @@ docker compose run --rm api python cli.py --dry-run
 ## Database Migrations
 
 ```bash
-# Run migrations
+# Run migrations locally
 alembic upgrade head
 
 # Create a new migration after model changes
 alembic revision --autogenerate -m "description"
+
+# Run migrations in Docker
+docker compose exec api alembic upgrade head
 ```
 
 ## Running Tests
@@ -203,6 +265,9 @@ alembic revision --autogenerate -m "description"
 ```bash
 pip install -r requirements.txt
 pytest tests/ -v
+
+# Or in Docker
+docker compose exec -T api pytest -q
 ```
 
 ## Cron Job
