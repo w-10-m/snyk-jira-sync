@@ -9,3 +9,4 @@ venv/
 .local/
 *.md
 !README.md
+.idea/
